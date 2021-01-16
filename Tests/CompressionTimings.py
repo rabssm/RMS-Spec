@@ -33,9 +33,16 @@ comp = Compressor(None, None, None, None, None, config)
 WIDTH = 1280
 HEIGHT = 720
 
+ITERATIONS = 5
+
 def timing(img):
     t = time.time()
     comp.compress(img)
+    return time.time() - t
+
+def timingOptimized(img):
+    t = time.time()
+    comp.compressOptimized(img)
     return time.time() - t
    
 def create(f):
@@ -65,21 +72,31 @@ def test():
 
     func_list = [black, white, uniform, gauss]
     
-    t = [0, 0, 0, 0]
+    t = [[0, 0, 0, 0], [0, 0, 0, 0]]
     
     for i in range(4):
 
         arr = create(func_list[i])
         timing(arr) # warmup
+        timingOptimized(arr) # warmup
 
-        for n in range(2):
-            t[i] += timing(arr)
+        for n in range(ITERATIONS):
+            t[0][i] += timing(arr)
+            t[1][i] += timingOptimized(arr)
 
-    
-    print("Black:", t[0]/2)
-    print("White:", t[1]/2)
-    print("Uniform noise:", t[2]/2)
-    print("Gaussian noise:", t[3]/2  )
+    print("Non-optimized:")
+    print("Black:", t[0][0]/ITERATIONS)
+    print("White:", t[0][1]/ITERATIONS)
+    print("Uniform noise:", t[0][2]/ITERATIONS)
+    print("Gaussian noise:", t[0][3]/ITERATIONS)
+    print("Average:", (t[0][0]+t[0][1]+t[0][2]+t[0][3])/ITERATIONS/4)
+
+    print("Optimized:")
+    print("Black:", t[1][0]/ITERATIONS)
+    print("White:", t[1][1]/ITERATIONS)
+    print("Uniform noise:", t[1][2]/ITERATIONS)
+    print("Gaussian noise:", t[1][3]/ITERATIONS)
+    print("Average:", (t[1][0]+t[1][1]+t[1][2]+t[1][3])/ITERATIONS/4)
     
 
 if __name__ == "__main__":

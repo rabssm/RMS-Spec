@@ -33,6 +33,7 @@ from RMS.Formats import FieldIntensities
 import pyximport
 pyximport.install(setup_args={'include_dirs':[np.get_include()]})
 from RMS.CompressionCy import compressFrames
+from RMS.CompressionCy import compressFramesOptimized
 
 
 # Get the logger from the main module
@@ -133,6 +134,27 @@ class Compressor(multiprocessing.Process):
         
         # Run cythonized compression
         ftp_array, fieldsum = compressFrames(frames, self.config.deinterlace_order)
+
+        return ftp_array, fieldsum
+
+
+    def compressOptimized(self, frames):
+        """ Compress frames to the FTP-compatible array and extract sums of intensities per every field.
+
+        NOTE: The standard deviation calculation is performed in a non-standard way due to performance 
+            concerns. The end result is the same as a proper calculation due to the usage of low-precision
+            8-bit unsigned integers, so the difference does not matter.
+        
+        Arguments:
+            frames: [3D ndarray] grayscale frames stored as 3d numpy array
+        
+        Return:
+            [3D ndarray]: in format: (N, y, x) where N is a member of [0, 1, 2, 3]
+
+        """
+        
+        # Run cythonized compression
+        ftp_array, fieldsum = compressFramesOptimized(frames, self.config.deinterlace_order)
 
         return ftp_array, fieldsum
     
