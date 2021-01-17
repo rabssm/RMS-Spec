@@ -16,9 +16,7 @@ ctypedef np.float64_t FLOAT_TYPE_t
 
 
 # Declare math functions
-cdef extern from "math.h":
-    double sqrt(double)
-
+from libc.math cimport sqrt
 
 @cython.cdivision(True)
 @cython.boundscheck(False)
@@ -188,151 +186,158 @@ cdef struct bufferValues:
     unsigned int max_val_4
     unsigned int num_equal
 
+cdef class NativeCompressor:
+    cdef bufferValues *buffer
+    cdef unsigned char *ftp_array
+    cdef unsigned int *fieldsum
+    cdef int frames_num
+    cdef int height
+    cdef int width
 
-@cython.cdivision(True)
-@cython.boundscheck(False)
-@cython.wraparound(False)
-def compressFramesOptimized(const unsigned char[:,:,:] frames, int deinterlace_order):
-    return doCompressFramesOptimized(&frames[0][0][0], frames.shape[0], frames.shape[1], frames.shape[2], deinterlace_order)
+    def __cinit__(self, int frames_num, int height, int width, unsigned char[:,:,:] ftp_array, unsigned int[:] fieldsum):
+        self.buffer = <bufferValues *> malloc(height * width * sizeof(bufferValues)) # allocate memory for buffer array
 
-@cython.cdivision(True)
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef doCompressFramesOptimized(const unsigned char *frames, int frames_num, int height, int width, int deinterlace_order):
+    def __init__(self, int frames_num, int height, int width, unsigned char[:,:,:] ftp_array, unsigned int[:] fieldsum):
+        self.ftp_array = &ftp_array[0][0][0]
+        self.fieldsum = &fieldsum[0]
+        self.frames_num = frames_num
+        self.height = height
+        self.width = width
 
-    # Init the output four frame temporal pixel array
-    cdef np.ndarray[INT8_TYPE_t, ndim=3] ftp_array = np.empty([4, height, width], dtype=INT8_TYPE)
+    def __dealloc__(self):
+        free(self.buffer) # free buffer's memory
 
-    cdef unsigned int deinterlace_multiplier = 1 # If there's no deinterlacing, then only the value from the whole frame will be summed up
-    if deinterlace_order >= 0:
-        # Otherwise, value from every field will be summed up
-        deinterlace_multiplier = 2
+    @cython.cdivision(True)
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    def compressFramesOptimized(self, const unsigned char[:,:,:] frames, int deinterlace_order):
+        self.doCompressFramesOptimized(&frames[0][0][0], deinterlace_order)
 
-    # Array for field/frame intensity sums. If the video is interlaced, then there with will twice the number 
-    # of fields as there are frames
-    cdef np.ndarray[INT32_TYPE_t, ndim=1] fieldsum = np.empty((frames_num*deinterlace_multiplier), INT32_TYPE)
-    
-    cdef unsigned short rand_count = 1
+    @cython.cdivision(True)
+    @cython.boundscheck(False)
+    @cython.wraparound(False)
+    cdef doCompressFramesOptimized(self, const unsigned char *frames, int deinterlace_order):
 
-    cdef unsigned int mean, pixel
-    cdef int n, x, y
-    cdef unsigned int frames_num_minus_four = frames_num - 4
-    cdef unsigned int frames_num_minus_five = frames_num - 5
-    
-    # Populate the randomN array with 2**16 random numbers
-    cdef unsigned char randomN[65536]
-    cdef unsigned int arand = <unsigned int> (rand() + rand())
+        cdef unsigned int deinterlace_multiplier = 1 # If there's no deinterlacing, then only the value from the whole frame will be summed up
+        if deinterlace_order >= 0:
+            # Otherwise, value from every field will be summed up
+            deinterlace_multiplier = 2
+        
 
-    for n in range(65536):
-        arand = (arand*32719 + 3)%32749
-        randomN[n] = <unsigned char>(32767.0/<double>(1 + arand%32767))
+        cdef unsigned int mean, pixel
+        cdef int n, x, y
+        cdef bufferValues b
+        
+        cdef unsigned int frames_num_minus_four = self.frames_num - 4
+        cdef unsigned int frames_num_minus_five = self.frames_num - 5
+        cdef int frames_times_height = self.frames_num * self.height
+        cdef int four_times_height = 4 * self.height
+        
+        cdef unsigned char randomN[65536] # allocate on stack
 
-    # initialize buffer array
-    # buffer stores following varables for each pixel: acc, var, max_val, max_val_2, max_val_3, max_val_4, num_equal, max_frame
-    # (accumulator, variance, four maximum values, number of equal values & frame of maximum value)
-    cdef bufferValues *buffer = <bufferValues *> malloc(height * width * sizeof(bufferValues))
-    cdef bufferValues *b
+        # Populate the randomN array with 2**16 random numbers
+        cdef unsigned short rand_count = 1
+        cdef unsigned int arand = <unsigned int> (rand() + rand())
+        for n in range(65536):
+            arand = (arand*32719 + 3)%32749
+            randomN[n] = <unsigned char>(32767.0/<double>(1 + arand%32767))
 
-    # Calculate FTP (mean, stddev, max_val, and max_val frame)
+        # Calculate FTP (mean, stddev, max_val, and max_val frame)
 
-    cdef int frames_plus_height_num = frames_num + height
+        for n in range(self.frames_num):
+            self.fieldsum[n] = 0
+            if deinterlace_multiplier == 2: self.fieldsum[n + 1] = 0
 
-    for n in range(frames_num):
-        fieldsum[n] = 0
-        if deinterlace_multiplier == 2: fieldsum[n + 1] = 0
+            for y in range(self.height):
+                for x in range(self.width):
+                    b = self.buffer[y * self.height + x]
 
-        for y in range(height):
-            for x in range(width):
-                b = &buffer[y * height + x]
+                    if n == 0: # initialize buffer variables
+                        b.acc = 0
+                        b.var = 0
+                        b.max_frame = 0
+                        b.max_val = 0
+                        b.max_val_2 = 0
+                        b.max_val_3 = 0
+                        b.max_val_4 = 0
+                        b.num_equal = 0
 
-                if n == 0: # initialize buffer variables
-                    b.acc = 0
-                    b.var = 0
-                    b.max_frame = 0
-                    b.max_val = 0
-                    b.max_val_2 = 0
-                    b.max_val_3 = 0
-                    b.max_val_4 = 0
-                    b.num_equal = 0
-
-                pixel = <unsigned int> frames[n * frames_plus_height_num + y * height + x]
-                b.acc += pixel
-                b.var += pixel**2
-                
-                # Assign the maximum value
-                if pixel > b.max_val:
+                    pixel = <unsigned int> frames[n * frames_times_height + y * self.height + x]
+                    b.acc += pixel
+                    b.var += pixel**2
                     
-                    # Track the top 4 maximum values
-                    b.max_val_4 = b.max_val_3
-                    b.max_val_3 = b.max_val_2
-                    b.max_val_2 = b.max_val
-                    b.max_val = pixel
-
-                    b.num_equal = 1
-                    b.max_frame = n
-
-
-                else:
-
-                    # Randomize taken frame number for max_val pixel if there are several frames with the 
-                    # maximum value
-                    if b.max_val == pixel:
-                    
-                        b.num_equal += 1
+                    # Assign the maximum value
+                    if pixel > b.max_val:
                         
-                        # rand_count is unsigned short, which means it will overflow back to 0 after 65535
-                        rand_count = (rand_count + 1)%65536
-
-                        # Select the frame by random
-                        if b.num_equal <= randomN[rand_count]:
-                            b.max_frame = n
-
-
-                    # Track the top 4 maximum values, which is used to remove wakes from mean and stddev
-                    if pixel > b.max_val_2:
+                        # Track the top 4 maximum values
                         b.max_val_4 = b.max_val_3
                         b.max_val_3 = b.max_val_2
-                        b.max_val_2 = pixel
+                        b.max_val_2 = b.max_val
+                        b.max_val = pixel
 
-                    elif pixel > b.max_val_3:
-                        b.max_val_4 = b.max_val_3
-                        b.max_val_3 = pixel
-
-                    elif pixel > b.max_val_4:
-                        b.max_val_4 = pixel
+                        b.num_equal = 1
+                        b.max_frame = n
 
 
-                # Calculate the index for fieldsum, dependent on the deinterlace order (and if there's any detinerlacing at all)
-                # and use it to sum intensity per every field
-                fieldsum[deinterlace_multiplier*n + (deinterlace_multiplier - 1)*((y + deinterlace_order)%2)] += pixel
+                    else:
 
-                if n == frames_num - 1: # all frames have written their values, complete FTP calculation
-                    # Calculate mean without top 4 max values
-                    b.acc -= b.max_val + b.max_val_2 + b.max_val_3 + b.max_val_4
-                    mean = b.acc/frames_num_minus_four
-                    
+                        # Randomize taken frame number for max_val pixel if there are several frames with the 
+                        # maximum value
+                        if b.max_val == pixel:
+                        
+                            b.num_equal += 1
+                            
+                            # rand_count is unsigned short, which means it will overflow back to 0 after 65535
+                            rand_count = (rand_count + 1)%65536
 
-                    ### Calculate stddev without top 4 max values ##
-                    
-                    # Remove top 4 max values
-                    b.var -= b.max_val**2 + b.max_val_2**2 + b.max_val_3**2 + b.max_val_4**2
-                    
-                    # Subtract average squared sum of all values (acc*mean = acc*acc/frames_num_minus_four)
-                    b.var -= b.acc*mean    
+                            # Select the frame by random
+                            if b.num_equal <= randomN[rand_count]:
+                                b.max_frame = n
 
-                    # Compute the standard deviation
-                    b.var = <unsigned int> sqrt(b.var/frames_num_minus_five)
 
-                    # Make sure that the stddev is not 0, to prevent divide by zero afterwards
-                    if b.var == 0:
-                        b.var = 1
+                        # Track the top 4 maximum values, which is used to remove wakes from mean and stddev
+                        if pixel > b.max_val_2:
+                            b.max_val_4 = b.max_val_3
+                            b.max_val_3 = b.max_val_2
+                            b.max_val_2 = pixel
 
-                    # Output results
-                    ftp_array[0, y, x] = b.max_val
-                    ftp_array[1, y, x] = b.max_frame
-                    ftp_array[2, y, x] = mean
-                    ftp_array[3, y, x] = b.var
+                        elif pixel > b.max_val_3:
+                            b.max_val_4 = b.max_val_3
+                            b.max_val_3 = pixel
 
-    free(buffer)
+                        elif pixel > b.max_val_4:
+                            b.max_val_4 = pixel
 
-    return ftp_array, fieldsum
+
+                    # Calculate the index for fieldsum, dependent on the deinterlace order (and if there's any detinerlacing at all)
+                    # and use it to sum intensity per every field
+                    self.fieldsum[deinterlace_multiplier*n + (deinterlace_multiplier - 1)*((y + deinterlace_order)%2)] += pixel
+
+                    if n == self.frames_num - 1: # all frames have written their values, complete FTP calculation
+                        # Calculate mean without top 4 max values
+                        b.acc -= b.max_val + b.max_val_2 + b.max_val_3 + b.max_val_4
+                        mean = b.acc/frames_num_minus_four
+                        
+
+                        ### Calculate stddev without top 4 max values ##
+                        
+                        # Remove top 4 max values
+                        b.var -= b.max_val**2 + b.max_val_2**2 + b.max_val_3**2 + b.max_val_4**2
+                        
+                        # Subtract average squared sum of all values (acc*mean = acc*acc/frames_num_minus_four)
+                        b.var -= b.acc*mean    
+
+                        # Compute the standard deviation
+                        b.var = <unsigned int> sqrt(b.var/frames_num_minus_five)
+
+                        # Make sure that the stddev is not 0, to prevent divide by zero afterwards
+                        if b.var == 0:
+                            b.var = 1
+
+                        # Output results
+                        self.ftp_array[0 * four_times_height + y * self.height + x] = b.max_val
+                        self.ftp_array[1 * four_times_height + y * self.height + x] = b.max_frame
+                        self.ftp_array[2 * four_times_height + y * self.height + x] = mean
+                        self.ftp_array[3 * four_times_height + y * self.height + x] = b.var
+                    else: # there are still some frames left, store back to buffer
+                        self.buffer[y * self.height + x] = b

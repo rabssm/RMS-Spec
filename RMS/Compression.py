@@ -33,7 +33,7 @@ from RMS.Formats import FieldIntensities
 import pyximport
 pyximport.install(setup_args={'include_dirs':[np.get_include()]})
 from RMS.CompressionCy import compressFrames
-from RMS.CompressionCy import compressFramesOptimized
+from RMS.CompressionCy import NativeCompressor
 
 
 # Get the logger from the main module
@@ -83,6 +83,9 @@ class Compressor(multiprocessing.Process):
     """
 
     running = False
+    native_compressor = None
+    native_ftp_array = None
+    native_fieldsum = None
     
     def __init__(self, data_dir, array1, startTime1, array2, startTime2, config, detector=None):
         """
@@ -152,11 +155,23 @@ class Compressor(multiprocessing.Process):
             [3D ndarray]: in format: (N, y, x) where N is a member of [0, 1, 2, 3]
 
         """
+
+        if self.native_compressor is None:
+            # Init the output four frame temporal pixel array
+            self.native_ftp_array = np.empty([4, frames.shape[1], frames.shape[2]], dtype=np.uint8)
+
+            # Array for field/frame intensity sums. If the video is interlaced, then there with will
+            # twice the number of fields as there are frames
+            deinterlace_multiplier = 1 if self.config.deinterlace_order == 0 else 2
+            self.fieldsum = np.empty((frames.shape[0]*deinterlace_multiplier), dtype=np.uint32)
+
+            # initialize cython compression class
+            self.native_compressor = NativeCompressor(frames.shape[0], frames.shape[1], frames.shape[2], self.native_ftp_array, self.fieldsum)
         
         # Run cythonized compression
-        ftp_array, fieldsum = compressFramesOptimized(frames, self.config.deinterlace_order)
+        self.native_compressor.compressFramesOptimized(frames, self.config.deinterlace_order)
 
-        return ftp_array, fieldsum
+        return self.native_ftp_array, self.native_fieldsum
     
 
 
