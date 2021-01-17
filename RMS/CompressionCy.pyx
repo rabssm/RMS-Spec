@@ -176,7 +176,7 @@ def compressFrames(np.ndarray[INT8_TYPE_t, ndim=3] frames, int deinterlace_order
 
     return ftp_array, fieldsum[:frames_num*deinterlace_multiplier]
 
-from libc.stdlib cimport malloc, free
+from libc.stdlib cimport malloc, free, rand
 
 cdef struct bufferValues:
     unsigned int acc
@@ -192,46 +192,36 @@ cdef struct bufferValues:
 @cython.cdivision(True)
 @cython.boundscheck(False)
 @cython.wraparound(False)
-def compressFramesOptimized(np.ndarray[INT8_TYPE_t, ndim=3] frames, int deinterlace_order):
+def compressFramesOptimized(const unsigned char[:,:,:] frames, int deinterlace_order):
+    return doCompressFramesOptimized(&frames[0][0][0], frames.shape[0], frames.shape[1], frames.shape[2], deinterlace_order)
+
+@cython.cdivision(True)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef doCompressFramesOptimized(const unsigned char *frames, int frames_num, int height, int width, int deinterlace_order):
 
     # Init the output four frame temporal pixel array
-    cdef np.ndarray[INT8_TYPE_t, ndim=3] ftp_array = np.empty([4, frames.shape[1], frames.shape[2]], 
-        dtype=INT8_TYPE)
+    cdef np.ndarray[INT8_TYPE_t, ndim=3] ftp_array = np.empty([4, height, width], dtype=INT8_TYPE)
 
-
-    # Array for field/frame intensity sums. If the video is interlaced, then there with will twice the number 
-    # of fields as there are frames
-    cdef np.ndarray[INT32_TYPE_t, ndim=1] fieldsum = np.zeros((2*frames.shape[0]), INT32_TYPE)
-
-    cdef unsigned int deinterlace_multiplier = 2
-
-    # Init the field intensity sums array
-    if deinterlace_order < 0:
-
-        # If there's no deinterlacing, then only the value from the whole frame will be summed up
-        deinterlace_multiplier = 1
-
-    else:
-
+    cdef unsigned int deinterlace_multiplier = 1 # If there's no deinterlacing, then only the value from the whole frame will be summed up
+    if deinterlace_order >= 0:
         # Otherwise, value from every field will be summed up
         deinterlace_multiplier = 2
 
+    # Array for field/frame intensity sums. If the video is interlaced, then there with will twice the number 
+    # of fields as there are frames
+    cdef np.ndarray[INT32_TYPE_t, ndim=1] fieldsum = np.empty((frames_num*deinterlace_multiplier), INT32_TYPE)
     
     cdef unsigned short rand_count = 1
 
     cdef unsigned int mean, pixel
     cdef int n, x, y
-    cdef int height = frames.shape[1]
-    cdef int width = frames.shape[2]
-    cdef unsigned int frames_num = frames.shape[0]
     cdef unsigned int frames_num_minus_four = frames_num - 4
     cdef unsigned int frames_num_minus_five = frames_num - 5
-
-    cdef unsigned int fieldsum_indx
     
     # Populate the randomN array with 2**16 random numbers
-    cdef np.ndarray[INT8_TYPE_t, ndim=1] randomN = np.empty(shape=[65536], dtype=INT8_TYPE)
-    cdef unsigned int arand = randomN[0]
+    cdef unsigned char randomN[65536]
+    cdef unsigned int arand = <unsigned int> (rand() + rand())
 
     for n in range(65536):
         arand = (arand*32719 + 3)%32749
@@ -244,7 +234,12 @@ def compressFramesOptimized(np.ndarray[INT8_TYPE_t, ndim=3] frames, int deinterl
 
     # Calculate FTP (mean, stddev, max_val, and max_val frame)
 
+    cdef int frames_plus_height_num = frames_num + height
+
     for n in range(frames_num):
+        fieldsum[n] = 0
+        if deinterlace_multiplier == 2: fieldsum[n + 1] = 0
+
         for y in range(height):
             for x in range(width):
                 b = buffer[y * height + x]
@@ -259,7 +254,7 @@ def compressFramesOptimized(np.ndarray[INT8_TYPE_t, ndim=3] frames, int deinterl
                     b.max_val_4 = 0
                     b.num_equal = 0
 
-                pixel = frames[n, y, x]
+                pixel = <unsigned int> frames[n * frames_plus_height_num + y * height + x]
                 b.acc += pixel
                 b.var += pixel**2
                 
@@ -306,13 +301,9 @@ def compressFramesOptimized(np.ndarray[INT8_TYPE_t, ndim=3] frames, int deinterl
                         b.max_val_4 = pixel
 
 
-                # Calculate the index for fieldsum, dependent on the deinterlace order (and if there's any
-                # detinerlacing at all)
-                fieldsum_indx = deinterlace_multiplier*n \
-                    + (deinterlace_multiplier - 1)*((y + deinterlace_order)%2)
-
-                # Sum intensity per every field
-                fieldsum[fieldsum_indx] += <unsigned long> pixel
+                # Calculate the index for fieldsum, dependent on the deinterlace order (and if there's any detinerlacing at all)
+                # and use it to sum intensity per every field
+                fieldsum[deinterlace_multiplier*n + (deinterlace_multiplier - 1)*((y + deinterlace_order)%2)] += pixel
 
                 if n == frames_num - 1: # all frames have written their values, complete FTP calculation
                     # Calculate mean without top 4 max values
@@ -343,4 +334,4 @@ def compressFramesOptimized(np.ndarray[INT8_TYPE_t, ndim=3] frames, int deinterl
 
     free(buffer)
 
-    return ftp_array, fieldsum[:frames_num*deinterlace_multiplier]
+    return ftp_array, fieldsum
