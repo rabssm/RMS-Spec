@@ -231,6 +231,7 @@ cdef doCompressFramesOptimized(const unsigned char *frames, int frames_num, int 
     # buffer stores following varables for each pixel: acc, var, max_val, max_val_2, max_val_3, max_val_4, num_equal, max_frame
     # (accumulator, variance, four maximum values, number of equal values & frame of maximum value)
     cdef bufferValues *buffer = <bufferValues *> malloc(height * width * sizeof(bufferValues))
+    cdef bufferValues *b
 
     # Calculate FTP (mean, stddev, max_val, and max_val frame)
 
@@ -242,7 +243,7 @@ cdef doCompressFramesOptimized(const unsigned char *frames, int frames_num, int 
 
         for y in range(height):
             for x in range(width):
-                b = buffer[y * height + x]
+                b = &buffer[y * height + x]
 
                 if n == 0: # initialize buffer variables
                     b.acc = 0

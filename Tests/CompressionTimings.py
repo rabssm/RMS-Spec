@@ -28,12 +28,14 @@ import sys
 config = cr.parse(".config")
 comp = Compressor(None, None, None, None, None, config)
 
-
 # IMAGE SIZE
 WIDTH = 1280
 HEIGHT = 720
 
-ITERATIONS = 5
+array_pad = 1 if (256*config.width*config.height)%(512*1024) == 0 else 0
+
+ITERATIONS = 2
+INNER_ITERATIONS = 2
 
 def timing(img):
     t = time.time()
@@ -46,8 +48,7 @@ def timingOptimized(img):
     return time.time() - t
    
 def create(f):
-
-    arr = np.empty((256, HEIGHT, WIDTH), np.uint8)
+    arr = np.empty((256, HEIGHT+array_pad, WIDTH+array_pad), np.uint8)
 
     for i in range(256):
         arr[i] = f()
@@ -56,47 +57,49 @@ def create(f):
 
 
 def black():
-    return np.zeros((HEIGHT, WIDTH), np.uint8)
+    return np.zeros((HEIGHT+array_pad, WIDTH+array_pad), np.uint8)
 
 def white():
-    return np.full((HEIGHT, WIDTH), 255, np.uint8)
+    return np.full((HEIGHT+array_pad, WIDTH+array_pad), 255, np.uint8)
 
 def uniform():
-    return np.random.uniform(0, 256, (HEIGHT, WIDTH))
+    return np.random.uniform(0, 256, (HEIGHT+array_pad, WIDTH+array_pad))
 
 def gauss():
-    return np.random.normal(128, 2, (HEIGHT, WIDTH))
+    return np.random.normal(128, 2, (HEIGHT+array_pad, WIDTH+array_pad))
 
 
 def test():
 
     func_list = [black, white, uniform, gauss]
     
-    t = [[0, 0, 0, 0], [0, 0, 0, 0]]
+    t = np.zeros((2, 4), dtype=np.float)
     
-    for i in range(4):
+    for iteration in range(ITERATIONS):
+        for i in range(4):
+            arr = create(func_list[i])
+            timing(arr) # warmup
+            timingOptimized(arr) # warmup
 
-        arr = create(func_list[i])
-        timing(arr) # warmup
-        timingOptimized(arr) # warmup
+            for n in range(INNER_ITERATIONS):
+                t[0][i] += timing(arr)
+                t[1][i] += timingOptimized(arr)
 
-        for n in range(ITERATIONS):
-            t[0][i] += timing(arr)
-            t[1][i] += timingOptimized(arr)
+    t /= (ITERATIONS * INNER_ITERATIONS)
 
     print("Non-optimized:")
-    print("Black:", t[0][0]/ITERATIONS)
-    print("White:", t[0][1]/ITERATIONS)
-    print("Uniform noise:", t[0][2]/ITERATIONS)
-    print("Gaussian noise:", t[0][3]/ITERATIONS)
-    print("Average:", (t[0][0]+t[0][1]+t[0][2]+t[0][3])/ITERATIONS/4)
+    print("Black:", t[0][0])
+    print("White:", t[0][1])
+    print("Uniform noise:", t[0][2])
+    print("Gaussian noise:", t[0][3])
+    print("Average:", np.mean(t[0]))
 
     print("Optimized:")
-    print("Black:", t[1][0]/ITERATIONS)
-    print("White:", t[1][1]/ITERATIONS)
-    print("Uniform noise:", t[1][2]/ITERATIONS)
-    print("Gaussian noise:", t[1][3]/ITERATIONS)
-    print("Average:", (t[1][0]+t[1][1]+t[1][2]+t[1][3])/ITERATIONS/4)
+    print("Black:", t[1][0])
+    print("White:", t[1][1])
+    print("Uniform noise:", t[1][2])
+    print("Gaussian noise:", t[1][3])
+    print("Average:", np.mean(t[1]))
     
 
 if __name__ == "__main__":
