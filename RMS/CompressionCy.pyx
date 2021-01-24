@@ -226,7 +226,7 @@ cdef class NativeCompressor:
 
         cdef unsigned int mean, pixel
         cdef int n, x, y
-        cdef bufferValues b
+        cdef bufferValues *b
         
         cdef unsigned int frames_num_minus_four = self.frames_num - 4
         cdef unsigned int frames_num_minus_five = self.frames_num - 5
@@ -250,7 +250,7 @@ cdef class NativeCompressor:
 
             for y in range(self.height):
                 for x in range(self.width):
-                    b = self.buffer[y * self.height + x]
+                    b = &self.buffer[y * self.height + x]
 
                     if n == 0: # initialize buffer variables
                         b.acc = 0
@@ -339,5 +339,3 @@ cdef class NativeCompressor:
                         self.ftp_array[1 * four_times_height + y * self.height + x] = b.max_frame
                         self.ftp_array[2 * four_times_height + y * self.height + x] = mean
                         self.ftp_array[3 * four_times_height + y * self.height + x] = b.var
-                    else: # there are still some frames left, store back to buffer
-                        self.buffer[y * self.height + x] = b
