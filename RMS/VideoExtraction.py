@@ -29,6 +29,8 @@ from RMS.Routines import Grouping3D
 from RMS.Routines.MaskImage import maskImage
 from RMS.Formats import FRbin
 
+import cv2
+
 
 # Get the logger from the main module
 log = logging.getLogger("logger")
@@ -199,7 +201,18 @@ class Extractor(Process):
 
             if lastFrame >= self.frames.shape[0]:
                 lastFrame = self.frames.shape[0] - 1
-                
+
+            # Save the frames as a lossless ffmpeg video
+            start_time = time.time()
+            fourcc = cv2.VideoWriter_fourcc(*'FFV1')
+            videowriter = cv2.VideoWriter(self.filename + "_" + str(firstFrame) + ".mkv", fourcc, self.config.fps, (self.config.width, self.config.height), 0)
+
+            for index in range(firstFrame, lastFrame) :
+                videowriter.write(self.frames[index])
+
+            videowriter.release()
+            log.debug("Fireball video writing took " + str(time.time() - start_time))
+
 
             # Cut of the fireball from raw video frames
             length, cropouts, sizepos = Grouping3D.detectionCutOut(self.frames, self.compressed, 
