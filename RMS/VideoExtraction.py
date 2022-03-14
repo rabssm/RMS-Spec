@@ -205,13 +205,13 @@ class Extractor(Process):
             # Save the frames as a lossless ffmpeg video
             start_time = time.time()
             fourcc = cv2.VideoWriter_fourcc(*'FFV1')
-            videowriter = cv2.VideoWriter(self.filename + "_" + str(firstFrame) + ".mkv", fourcc, self.config.fps, (self.config.width, self.config.height), 0)
+            videowriter = cv2.VideoWriter(self.data_dir + "/" + self.filename + "_" + str(firstFrame) + ".mkv", fourcc, self.config.fps, (self.config.width, self.config.height), 0)
 
             for index in range(firstFrame, lastFrame) :
                 videowriter.write(self.frames[index])
 
             videowriter.release()
-            log.debug("Fireball video writing took " + str(time.time() - start_time))
+            log.debug("Fireball video writing time: " + str(time.time() - start_time))
 
 
             # Cut of the fireball from raw video frames
