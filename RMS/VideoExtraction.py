@@ -202,17 +202,9 @@ class Extractor(Process):
             if lastFrame >= self.frames.shape[0]:
                 lastFrame = self.frames.shape[0] - 1
 
-            # Save the frames as a lossless ffmpeg video
-            start_time = time.time()
-            fourcc = cv2.VideoWriter_fourcc(*'FFV1')
-            videowriter = cv2.VideoWriter(self.data_dir + "/" + self.filename + "_" + str(firstFrame) + ".mkv", fourcc, self.config.fps, (self.config.width, self.config.height), 0)
-
-            for index in range(firstFrame, lastFrame) :
-                videowriter.write(self.frames[index])
-
-            videowriter.release()
-            log.debug("Fireball video writing time: " + str(time.time() - start_time))
-
+            # Save the frames as a lossless ffmpeg video in a separate process
+            videowriter_process = Process(target=self.save_video, args=(self.frames[firstFrame:lastFrame], firstFrame, lastFrame, self.data_dir, self.filename, self.config.fps, self.config.width, self.config.height))
+            videowriter_process.start()
 
             # Cut of the fireball from raw video frames
             length, cropouts, sizepos = Grouping3D.detectionCutOut(self.frames, self.compressed, 
@@ -227,7 +219,33 @@ class Extractor(Process):
 
         
         return clips
-    
+
+
+    def save_video(self, frames, firstFrame, lastFrame, data_dir, filename, fps, width, height) :
+        """ Save the frames as a lossless video
+
+        Arguments:
+            frames: [list] a list of frames to be saved to video
+            firstFrame: [int] the index of the first frame in the sequence
+            lastFrame: [int] the index of the last frame in the sequence
+            data_dir: [string] the name of the capture data directory for saving
+            filename: [string] the name of the file for saving
+            fps: [int] the video frame rate in fps
+            width: [int] the width of the frames in pixels
+            height: [int] the height of the frames in pixels
+        """
+
+        start_time = time.time()
+        fourcc = cv2.VideoWriter_fourcc(*'FFV1')
+        video_filename = filename + "_" + str(firstFrame) + "_" + str(lastFrame) + ".mkv"
+        videowriter = cv2.VideoWriter(data_dir + "/" + video_filename, fourcc, fps, (width, height), 0)
+
+        for frame in frames :
+            videowriter.write(frame)
+
+        videowriter.release()
+        log.debug("Fireball video writing time [" + video_filename + "] : " + str(time.time() - start_time))
+
 
 
     def save(self, clips):
