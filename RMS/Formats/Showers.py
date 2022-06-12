@@ -28,6 +28,20 @@ class Shower(object):
         self.name = shower_entry[1]
         self.name_full = shower_entry[2]
 
+        # Generate a unique integer code based on the IAU code (which may have letters)
+        self.iau_code_int_unique = ""
+        self.iau_code_int = ""
+        for c in str(self.iau_code):
+            if c.isdigit():
+                self.iau_code_int_unique += c
+                self.iau_code_int += c
+            else:
+                self.iau_code_int_unique += str(ord(c))
+
+        self.iau_code_int = int(self.iau_code_int)
+        self.iau_code_int_unique = int(self.iau_code_int_unique)
+        
+
         self.lasun_beg = float(shower_entry[3]) # deg
         self.lasun_max = float(shower_entry[4]) # deg
         self.lasun_end = float(shower_entry[5]) # deg
@@ -36,6 +50,9 @@ class Shower(object):
         self.dra = float(shower_entry[8]) # deg
         self.ddec = float(shower_entry[9]) # deg
         self.vg = float(shower_entry[10]) # km/s
+
+        # Reference height
+        self.ref_height = None
 
         # Load parameters for flux, if that type of shower entry is loaded
         if len(shower_entry) > 13:
@@ -47,8 +64,13 @@ class Shower(object):
             self.flux_zhr_peak = float(shower_entry[13])
             self.flux_bp = float(shower_entry[14])
             self.flux_bm = float(shower_entry[15])
+
             self.population_index = float(shower_entry[16])
             self.mass_index = 1 + 2.5*np.log10(self.population_index)
+
+            ref_ht = float(shower_entry[17])
+            if ref_ht > 0:
+                self.ref_height = ref_ht
 
         # Apparent radiant
         self.ra = None # deg
@@ -282,11 +304,11 @@ def getColorList(num, color_map=None):
     return colors
 
 
-def makeShowerColors(shower_data, color_map='viridis'):
+def makeShowerColors(shower_data, color_map):
     """ Generates a map of distinct colours indexed by shower name """
 
     # Sort showers into non-overlaping rows and assign them unique colors
-    _, code_name_dict = sortShowersIntoRows(shower_data)
+    _, code_name_dict = sortShowersIntoRows(shower_data, color_map)
 
     # Assign each color to shower name
     colors_by_name = {}
@@ -298,11 +320,11 @@ def makeShowerColors(shower_data, color_map='viridis'):
 
 
 
-def sortShowersIntoRows(shower_data):
+def sortShowersIntoRows(shower_data, color_map):
 
     # Generate an array of shower activity per 1 deg of solar longitude
     code_name_list = []
-    activity_stack = np.zeros((20, 360), dtype=np.uint16)
+    activity_stack = np.zeros((20, 360), dtype=np.uint32)
 
     for i in range(20):
         for sol_plot in range(0, 360):
@@ -312,13 +334,17 @@ def sortShowersIntoRows(shower_data):
                 continue
 
             for shower in shower_data:
-                code = int(shower.iau_code)
+                code = shower.iau_code_int_unique
                 name = shower.name
 
                 # Skip already assigned showers
                 if code in code_name_list:
                     continue
 
+                # skip if shower doesn't have a stated start or end
+                if np.any(np.isnan([shower.lasun_beg, shower.lasun_end])):
+                    continue 
+                
                 sol_min, sol_peak, sol_max = shower.lasun_beg, shower.lasun_max, shower.lasun_end
                 sol_min = int(np.floor(sol_min))%360
                 sol_max = int(np.ceil(sol_max))%360
@@ -362,17 +388,21 @@ def sortShowersIntoRows(shower_data):
     active_rows = np.count_nonzero([np.any(row) for row in activity_stack])
 
     # Assign shower colors by row
-    row_colors = getColorList(active_rows, color_map='viridis')
+    row_colors = getColorList(active_rows, color_map)
 
     # Assign a color to each shower
     code_name_dict = {}
     for shower in shower_data:
-        code = int(shower.iau_code)
+        code = shower.iau_code_int_unique
         name = shower.name
 
         # Skip assigned showers
         if code in code_name_dict:
             continue
+
+        # skip if shower doesn't have a stated start or end
+        if np.any(np.isnan([shower.lasun_beg, shower.lasun_end])):
+            continue 
 
         sol_min, sol_peak, sol_max = shower.lasun_beg, shower.lasun_max, shower.lasun_end
         sol_min = int(np.floor(sol_min))%360
@@ -395,7 +425,7 @@ def sortShowersIntoRows(shower_data):
 
 
 
-def generateActivityDiagram(config, shower_data, ax_handle=None, sol_marker=None, colors=None):
+def generateActivityDiagram(config, shower_data, ax_handle=None, sol_marker=None, color_map='viridis'):
     """ Generates a plot of shower activity across all solar longitudes. """
 
     shower_data = np.array(shower_data)
@@ -419,7 +449,7 @@ def generateActivityDiagram(config, shower_data, ax_handle=None, sol_marker=None
 
     # Sort showers into rows so that they do no overlap on the graph. This will also generate colors
     #   for every shower, sorted per row
-    activity_stack, code_name_dict = sortShowersIntoRows(shower_data)
+    activity_stack, code_name_dict = sortShowersIntoRows(shower_data, color_map=color_map)
 
     
     # If no axis was given, crate one
@@ -550,18 +580,42 @@ def generateActivityDiagram(config, shower_data, ax_handle=None, sol_marker=None
 
 if __name__ == "__main__":
 
+    import argparse
     import RMS.ConfigReader as cr
 
 
+    ###
+
+    arg_parser = argparse.ArgumentParser(description="Plot chart of showers by date.")
+
+    arg_parser.add_argument('-c', '--config', nargs=1, metavar='CONFIG_PATH', type=str, \
+        help="Path to a config file which will be used instead of the default one.")
+
+    arg_parser.add_argument('-p', '--palette', metavar='PALETTE', type=str, \
+        help="color palette to use - one of viridis, gist_ncar, rainbow etc")
+
+    cml_args = arg_parser.parse_args()
+
+    ###
+
+    
+    # Load the config file
+    config = cr.loadConfigFromDirectory(cml_args.config, 'notused')
+
+
     # Load the list of all showers
-    shower_table = loadShowers("share", "established_showers.csv")
+    shower_table = loadShowers(config.shower_path, config.shower_file_name)
     shower_list = [Shower(shower_entry) for shower_entry in shower_table]
 
+    if cml_args.palette is None:
+        color_map = config.shower_color_map
+    else:
+        color_map = cml_args.palette
 
-    # Generate activity diagram
-    config = cr.parse('.config')
+
     generateActivityDiagram(config, shower_list, \
-        sol_marker=np.degrees(jd2SolLonSteyaert(datetime2JD(datetime.datetime.now()))))
+        sol_marker=np.degrees(jd2SolLonSteyaert(datetime2JD(datetime.datetime.now()))), \
+        color_map=color_map)
 
     plt.show()
 
