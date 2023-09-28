@@ -80,7 +80,12 @@ def loadImage(img_path, flatten=-1):
         img = imread(img_path, flatten)
 
     else:
-        img = imread(img_path, as_gray=bool(flatten))
+
+        try:
+            img = imread(img_path, as_gray=bool(flatten))
+            
+        except TypeError:
+            img = imread(img_path, mode="L")
 
     return img
 
@@ -280,7 +285,7 @@ def applyBrightnessAndContrast(img, brightness, contrast):
     img_type = img.dtype
 
     # Convert image to float
-    img = img.astype(np.float)
+    img = img.astype(float)
 
     # Apply brightness
     img = img + brightness
@@ -833,8 +838,8 @@ if __name__ == "__main__":
 
     ff = FFfile.read(dir_path, file_name)
 
-    # Load the flat
-    flat_struct = loadFlat(os.getcwd(), config.flat_file)
+    # Load the default flat
+    flat_struct = loadFlat(config.config_file_path, config.flat_file)
 
 
     t1 = time.clock()

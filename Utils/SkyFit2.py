@@ -26,11 +26,12 @@ import RMS.ConfigReader as cr
 from RMS.ExtractStars import extractStarsAndSave
 import RMS.Formats.CALSTARS as CALSTARS
 from RMS.Formats.Platepar import Platepar, getCatalogStarsImagePositions
+from RMS.Formats.FFfile import convertFRNameToFF
 from RMS.Formats.FrameInterface import detectInputTypeFolder, detectInputTypeFile
 from RMS.Formats.FTPdetectinfo import writeFTPdetectinfo
 from RMS.Formats import StarCatalog
 from RMS.Pickling import loadPickle, savePickle
-from RMS.Math import angularSeparation, RMSD, vectNorm
+from RMS.Math import angularSeparation, RMSD, vectNorm, cartesianToPolar, isAngleBetween
 from RMS.Misc import decimalDegreesToSexHours
 from RMS.Routines.AddCelestialGrid import updateRaDecGrid, updateAzAltGrid
 from RMS.Routines.CustomPyqtgraphClasses import *
@@ -41,15 +42,6 @@ import pyximport
 pyximport.install(setup_args={'include_dirs': [np.get_include()]})
 from RMS.Astrometry.CyFunctions import subsetCatalog, equatorialCoordPrecession
 
-
-
-def convertFRNameToFF(fr_name):
-    """ Convert the FR name format to an FF format. """
-
-    if fr_name.startswith("FR_") and fr_name.endswith(".bin"):
-        fr_name = fr_name.replace("FR_", "FF_", 1).replace(".bin", ".fits")
-
-    return fr_name
 
 
 class QFOVinputDialog(QtWidgets.QDialog):
@@ -1471,7 +1463,7 @@ class PlateTool(QtWidgets.QMainWindow):
                 remove_under_horizon=False, sort_declination=True)
 
             # Create a mask to filter out all points outside the image and the FOV
-            filter_indices_mask = np.zeros(len(geo_xy), dtype=np.bool)
+            filter_indices_mask = np.zeros(len(geo_xy), dtype=bool)
             filter_indices_mask[filtered_indices] = True
             filtered_indices_all = filter_indices_mask & (geo_xy[:, 0] > 0) \
                                                     & (geo_xy[:, 0] < self.platepar.X_res) \
@@ -1560,10 +1552,10 @@ class PlateTool(QtWidgets.QMainWindow):
         self.centroid_star_markers2.setData(pos=[])
 
         # Draw photometry
-        if len(self.paired_stars) > 2:
+        if len(self.paired_stars) >= 2:
             self.photometry()
 
-        self.tab.param_manager.updatePairedStars()
+        self.tab.param_manager.updatePairedStars(min_fit_stars=self.getMinFitStars())
 
 
     def updateCalstars(self):
@@ -1811,9 +1803,9 @@ class PlateTool(QtWidgets.QMainWindow):
             catalog_dec.append(star_dec)
             catalog_mags.append(star_mag)
 
-        # Make sure there are more than 3 stars picked
+        # Make sure there are at least 2 stars picked
         self.residual_text.clear()
-        if len(px_intens_list) > 3:
+        if len(px_intens_list) >= 2:
 
             # Compute apparent magnitude corrected for extinction
             catalog_mags = extinctionCorrectionTrueToApparent(catalog_mags, catalog_ra, catalog_dec,
@@ -1888,7 +1880,14 @@ class PlateTool(QtWidgets.QMainWindow):
                                                    gridspec_kw={'height_ratios': [2, 1]})
 
                 # Set photometry window title
-                fig_p.canvas.set_window_title('Photometry')
+                try:
+                    fig_p.canvas.set_window_title('Photometry')
+
+                except AttributeError:
+                    fig_p.canvas.manager.window.setWindowTitle('Photometry')
+                
+                except:
+                    print("Warning: Could not set window title for photometry plot.")
 
                 # Plot catalog magnitude vs. raw logsum of pixel intensities
                 lsp_arr = np.log10(np.array(px_intens_list))
@@ -2278,6 +2277,25 @@ class PlateTool(QtWidgets.QMainWindow):
             if self.img_handle.input_type == 'images':
                 if not hasattr(self.img_handle, "cabernet_status"):
                     self.img_handle.cabernet_status = False
+
+            # Make sure an option is not missing from the UWO png mode
+            if self.img_handle.input_type == 'images':
+                if self.img_handle.uwo_png_mode:
+
+                    if not hasattr(self.img_handle, "uwo_magick_type"):
+
+                        # Disable uwo mode just to read the first frame without issues
+                        self.img_handle.uwo_png_mode = False
+                        
+                        # Load the first image
+                        img = self.img_handle.loadFrame(fr_no=0)
+
+                        # Re-enable uwo mode
+                        self.img_handle.uwo_png_mode = True
+
+                        # Get the magick type
+                        self.img_handle.uwo_magick_type = self.img_handle.getUWOMagickType(img)
+
 
         # Update possibly missing input_path variable
         if not hasattr(self, "input_path"):
@@ -4009,7 +4027,7 @@ class PlateTool(QtWidgets.QMainWindow):
         print('Platepar written to:', self.platepar_file)
 
     def saveDefaultPlatepar(self):
-        platepar_default_path = os.path.join(os.getcwd(), self.config.platepar_name)
+        platepar_default_path = os.path.join(self.config.config_file_path, self.config.platepar_name)
 
         # Save the platepar file
         self.platepar.write(platepar_default_path, fmt=self.platepar_fmt)
@@ -4356,7 +4374,8 @@ class PlateTool(QtWidgets.QMainWindow):
         """ Fits great circle to observations. """
 
         # Extract picked points
-        good_picks = collections.OrderedDict((frame, pick) for frame, pick in self.pick_list.items() if (pick['mode'] == 1) and (pick['x_centroid'] is not None))
+        good_picks = collections.OrderedDict((frame, pick) for frame, pick in self.pick_list.items() 
+                                             if (pick['mode'] == 1) and (pick['x_centroid'] is not None))
 
         # Remove the old great circle
         self.great_circle_line.clear()
@@ -4388,7 +4407,7 @@ class PlateTool(QtWidgets.QMainWindow):
 
                 cartesian_points = []
 
-                # Convert equatorial coordinates to a unit directon vector in the ECI frame
+                # Convert equatorial coordinates to a unit direction vector in the ECI frame
                 for ra, dec in zip(ra_data, dec_data):
 
                     vect = vectNorm(raDec2Vector(ra, dec))
@@ -4404,10 +4423,44 @@ class PlateTool(QtWidgets.QMainWindow):
                 x_arr, y_arr, z_arr = cartesian_points.T
                 coeffs, theta0, phi0 = fitGreatCircle(x_arr, y_arr, z_arr)
 
+                # # Find the great circle phase angle at the middle of the observation
+                # ra_mid = np.mean(ra_data)
+                # dec_mid = np.mean(dec_data)
+                # ra_list_temp = [ra_data[0], ra_mid, ra_data[-1]]
+                # dec_list_temp = [dec_data[0], dec_mid, dec_data[-1]]
+                # gc_phases = []
+
+                # for ra, dec in zip(ra_list_temp, dec_list_temp):
+                #     x, y, z = raDec2Vector(ra, dec)
+                #     theta, phi = cartesianToPolar(x, y, z)
+                #     gc_phase = (greatCirclePhase(theta, phi, theta0, phi0)[0])%(2*np.pi)
+
+                #     gc_phases.append(gc_phase)
+
+                # gc_phase_first, gc_phase_mid, gc_phase_last = gc_phases
+
+                # # Get the correct angle order (in the clockwise order: first, mid, last)
+                # if isAngleBetween(gc_phase_first, gc_phase_last, gc_phase_mid):
+                #     gc_phase_first, gc_phase_last = gc_phase_last, gc_phase_first
+
+                # # Generate a list of phase angles which are +/- 45 degrees from the middle phase and at least
+                # # 15 deg from the start and end phases
+                # gc_phase_min = gc_phase_mid - np.radians(45)
+                # gc_phase_max = gc_phase_mid + np.radians(45)
+                # if isAngleBetween(gc_phase_first, gc_phase_min, gc_phase_mid):
+                #     gc_phase_min = gc_phase_first - np.radians(15)
+                # if isAngleBetween(gc_phase_mid, gc_phase_max, gc_phase_last):
+                #     gc_phase_max = gc_phase_last + np.radians(15)
+
+                # # Generate a list of phase angles
+                # phase_angles = np.linspace(gc_phase_min, gc_phase_max, 1000)
+
+                # Generate a list of phase angles (full circle)
+                phase_angles = np.linspace(0, 2*np.pi, 1000)
+
                 
                 # Sample the great circle
-                phase_angles = np.linspace(0, 360, 1000)
-                x_array, y_array, z_array = greatCircle(np.radians(phase_angles), theta0, phi0)
+                x_array, y_array, z_array = greatCircle(phase_angles, theta0, phi0)
 
                 if isinstance(x_array, float):
                     x_array = [x_array]
@@ -4498,6 +4551,21 @@ class PlateTool(QtWidgets.QMainWindow):
 
         return min_type, min_index
 
+    def getMinFitStars(self):
+        """ Returns the minimum number of stars needed for the fit. """
+
+        #   - if fitting only the pointing and no scale and no distortion, then require 2 stars
+        #   - if the scale is also to be fitted but no distortion, then require 3 stars
+        #   - if the distortion is also to be fitted, then require 5 stars
+        if self.fit_only_pointing and self.fixed_scale:
+            min_stars = 2
+        elif self.fit_only_pointing and not self.fixed_scale:
+            min_stars = 3
+        else:
+            min_stars = 5
+
+        return min_stars
+
 
     def fitPickedStars(self):
         """ Fit stars that are manually picked. The function first only estimates the astrometry parameters
@@ -4505,9 +4573,13 @@ class PlateTool(QtWidgets.QMainWindow):
 
         """
 
-        # Fit the astrometry parameters, at least 5 stars are needed
-        if len(self.paired_stars) < 4:
-            qmessagebox(title='Number of stars', message="At least 5 paired stars are needed to do the fit!", message_type="warning")
+        # Check if there are enough stars for the fit
+        min_stars = self.getMinFitStars()
+        if len(self.paired_stars) < min_stars:
+
+            qmessagebox(title='Number of stars', 
+                        message="At least {:d} paired stars are needed to do the fit!".format(min_stars), 
+                        message_type="warning")
 
             return self.platepar
 
@@ -4755,6 +4827,11 @@ class PlateTool(QtWidgets.QMainWindow):
             fig_a.canvas.set_window_title("Astrometry fit")
 
         except AttributeError:
+
+            fig_a.canvas.manager.window.setWindowTitle("Astrometry fit")
+
+        except:
+
             # Handle FigureCanvasQTAgg error on some versions of Qt
             print("Failed to set the window title!")
 
@@ -5259,6 +5336,19 @@ class PlateTool(QtWidgets.QMainWindow):
         # Compute FOV size
         fov_horiz, fov_vert = computeFOVSize(self.platepar)
 
+        if self.img_handle.input_type == 'ff':
+            ff_name = self.img_handle.current_ff_file
+        else:
+            ff_name = "FF_{:s}_".format(self.platepar.station_code) \
+                          + self.img_handle.beginning_datetime.strftime("%Y%m%d_%H%M%S_") \
+                          + "{:03d}".format(int(self.img_handle.beginning_datetime.microsecond//1000)) \
+                          + "_0000000.fits"
+
+        # Get the number of stars in the list
+        if self.platepar.star_list is not None:
+            n_stars = len(self.platepar.star_list)
+        else:
+            n_stars = 0
 
         # Write the meta header
         meta_dict = {
@@ -5270,9 +5360,9 @@ class PlateTool(QtWidgets.QMainWindow):
             'cx' : self.platepar.X_res,                               # Horizontal camera resolution in pixels
             'cy' : self.platepar.Y_res,                               # Vertical camera resolution in pixels
             'photometric_band' : self.mag_band_string,                # The photometric band of the star catalogue
-            'image_file' : os.path.basename(self.input_path),         # The name of the original image or video
-            'isodate_start_obs': str(dt_ref.strftime(isodate_format_entry)),               # The date and time of the start of the video or exposure
-            'astrometry_number_stars' : len(self.platepar.star_list), # The number of stars identified and used in the astrometric calibration
+            'image_file' : ff_name,                                   # The name of the original image or video
+            'isodate_start_obs': str(dt_ref.strftime(isodate_format_entry)), # The date and time of the start of the video or exposure
+            'astrometry_number_stars' : n_stars,                      # The number of stars identified and used in the astrometric calibration
             'mag_label': 'mag',                                       # The label of the Magnitude column in the Point Observation data
             'no_frags': 1,                                            # The number of meteoroid fragments described in this data
             'obs_az': azim,                                           # The azimuth of the centre of the field of view in decimal degrees. North = 0, increasing to the East

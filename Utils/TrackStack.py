@@ -25,11 +25,13 @@ from RMS.Formats.FFfile import read as readFF
 from RMS.Formats.Platepar import Platepar
 from RMS.Math import angularSeparation
 from Utils.ShowerAssociation import showerAssociation
+from Utils.DrawConstellations import drawConstellations
 from RMS.Routines.MaskImage import loadMask, MaskStructure
 
 
 def trackStack(dir_paths, config, border=5, background_compensation=True, 
-        hide_plot=False, showers=None, darkbackground=False, out_dir=None):
+        hide_plot=False, showers=None, darkbackground=False, out_dir=None,
+        scalefactor=None, draw_constellations=False):
     """ Generate a stack with aligned stars, so the sky appears static. The folder should have a
         platepars_all_recalibrated.json file.
 
@@ -45,7 +47,10 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
         showers: [list[str]] List of showers to include, as code. E.g. or ["GEM","URS"].
             As a code for sporadics, use "..."
         darkbackground: [bool] force the sky background to be dark
+        out_dir: target folder to save into
+        scalefactor: factor to scale the canvas by; default 1, increase if image cropped
     """
+
     # normalise the path in a platform neutral way
     # done here so that trackStack() can be called from other modules
     dir_paths = [os.path.normpath(dir_path) for dir_path in dir_paths]
@@ -69,20 +74,27 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
 
     if showers is not None:
         associations = {}
+
         # Get FTP file so we can filter by shower
         for dir_path in dir_paths: 
+
             if os.path.isfile(os.path.join(dir_path,'.config')):
                 tmpcfg = cr.loadConfigFromDirectory('.config', dir_path)
             else:
                 tmpcfg = config
+
             ftp_list = glob(os.path.join(dir_path, 'FTPdetectinfo_{}*.txt'.format(tmpcfg.stationID)))
             ftp_list = [x for x in ftp_list if 'backup' not in x and 'unfiltered' not in x]
             ftp_list.sort() 
+
             if len(ftp_list) < 1:
                 print('unable to find FTPdetect file in {}'.format(dir_path))
                 return False
+            
             ftp_file = ftp_list[0] 
-            print('Determining shower details from {}'.format(ftp_file))
+
+            print('Performing shower association using {}'.format(ftp_file))
+
             associations_per_dir, _ = showerAssociation(config, [ftp_file], 
                 shower_code=None, show_plot=False, save_plot=False, plot_activity=False)
             associations.update(associations_per_dir)
@@ -91,6 +103,7 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
         ff_list = []
         for key in associations:
             ff_list.append(key[0])
+
     else:
         # Get a list of FF files in the folder
         ff_list = []
@@ -136,12 +149,13 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
 
     # Try loading the mask
     mask_path = None
+    mask_path_default = os.path.join(config.config_file_path, config.mask_file)
     if os.path.exists(os.path.join(dir_paths[0], config.mask_file)):
         mask_path = os.path.join(dir_paths[0], config.mask_file)
 
     # Try loading the default mask
-    elif os.path.exists(config.mask_file):
-        mask_path = os.path.abspath(config.mask_file)
+    elif os.path.exists(mask_path_default):
+        mask_path = os.path.abspath(mask_path_default)
 
     # Load the mask if given
     mask = None
@@ -206,7 +220,11 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
     #   The image size will be resampled to 1/2 of the original size to avoid interpolation
     scale = 0.5
     ang_sep_max = np.max(ang_sep_list)
-    img_size = int(scale*2*ang_sep_max*pp_ref.F_scale)
+    # scalefactor is a fudge factor to make the canvas large enough in some edge cases
+    # default 1 works in most cases but multi-camera configs may need 2 or 3
+    if scalefactor is None:
+        scalefactor = 1
+    img_size = int(scale*2*ang_sep_max*pp_ref.F_scale)*scalefactor
 
     #
 
@@ -225,6 +243,7 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
     avg_stack_count = np.zeros((img_size, img_size), dtype=int)
     max_deaveraged = np.zeros((img_size, img_size), dtype=np.uint8)
 
+
     # get number of images to include
     num_ffs = len(ff_found_list)
     if showers is not None:
@@ -236,12 +255,16 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
 
     # Load individual FFs and map them to the stack
     num_plotted = 0
+
     if got_tqdm is True:
         enumlist = tqdm(ff_found_list)
+
     else:
         enumlist = ff_found_list
+
     for i, ff_name in enumerate(enumlist):
         ff_basename = os.path.basename(ff_name)
+
         if showers is not None:
             try:
                 shower = associations[(ff_basename, 1.0)][1]
@@ -255,6 +278,7 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
         if showers is not None and showername not in showers:
             #print("Skipping, showername =", showername)
             continue
+
         num_plotted += 1
         if not got_tqdm:
             print("Stacking {:s}, {:.1f}% done".format(ff_basename, 100*num_plotted/num_ffs))
@@ -298,7 +322,7 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
         avepixel = copy.deepcopy(ff.avepixel)
         avepixel[mask.img == 0] = 0
 
-        # Compute deaveraged maxpixel
+        # Compute deaveraged maxpixel image
         max_deavg = maxpixel - avepixel
 
 
@@ -336,6 +360,12 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
                                                              max_deavg[y_coords, x_coords]]), axis=2)
 
 
+    # End if the number of plotted FFs is zero
+    if num_plotted == 0:
+        print()
+        print("No FFs plotted! Check the shower association or the detections.")
+        return False
+
     # Compute the blended avepixel background
     stack_img = avg_stack_sum
     stack_img[avg_stack_count > 0] /= avg_stack_count[avg_stack_count > 0]
@@ -344,13 +374,18 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
     stack_img = stack_img.astype(np.uint8)
 
 
+    # Draw constellations
+    if draw_constellations:
+        constellations_img = drawConstellations(pp_stack, ff_mid,
+                                                separation_deg=175)
+
+
     # Crop image
     non_empty_columns = np.where(stack_img.max(axis=0) > 0)[0]
     non_empty_rows = np.where(stack_img.max(axis=1) > 0)[0]
     crop_box = (np.min(non_empty_rows), np.max(non_empty_rows), np.min(non_empty_columns),
         np.max(non_empty_columns))
     stack_img = stack_img[crop_box[0]:crop_box[1]+1, crop_box[2]:crop_box[3]+1]
-
 
 
     # Plot and save the stack ###
@@ -365,6 +400,9 @@ def trackStack(dir_paths, config, border=5, background_compensation=True,
     if darkbackground is True:
         vmin = np.quantile(stack_img[stack_img>0], 0.05)
     plt.imshow(stack_img, cmap='gray', vmin=vmin, vmax=256, interpolation='nearest')
+    if draw_constellations:
+        constellations_img = constellations_img[crop_box[0]:crop_box[1]+1, crop_box[2]:crop_box[3]+1]
+        plt.imshow(constellations_img)
 
     ax.set_axis_off()
 
@@ -413,9 +451,14 @@ if __name__ == "__main__":
     arg_parser.add_argument('-o', '--output', type=str,
         help="""folder to save the image in.""")
 
+    arg_parser.add_argument('-f', '--scalefactor', type=int,
+        help="""scale factor to apply. Increase if image is cropped""")
+
     arg_parser.add_argument('-s', '--showers', type=str,
         help="Show only meteors from specific showers (e.g. URS, PER, GEM, ... for sporadic). Comma-separated list. \
             Note that an RMS config file that matches the data is required for this option.")
+
+    arg_parser.add_argument('--constellations', help="Overplot constellations", action="store_true")
 
     arg_parser.add_argument('-d', '--darkbackground', action="store_true",
         help="""Darken the background. """)
@@ -436,4 +479,5 @@ if __name__ == "__main__":
     dir_paths = [os.path.normpath(dir_path) for dir_path in cml_args.dir_paths]
     trackStack(dir_paths, config, background_compensation=(not cml_args.bkgnormoff),
         hide_plot=cml_args.hideplot, showers=showers, 
-        darkbackground=cml_args.darkbackground, out_dir=cml_args.output)
+        darkbackground=cml_args.darkbackground, out_dir=cml_args.output, scalefactor=cml_args.scalefactor,
+        draw_constellations=cml_args.constellations)

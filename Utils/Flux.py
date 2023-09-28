@@ -606,7 +606,12 @@ def loadTimeInvervals(config, dir_path):
             time_interval_json = " ".join(f.readlines())
 
             # Load time intervals back in
-            dt_json = json.loads(time_interval_json)
+            try:
+                dt_json = json.loads(time_interval_json)
+
+            except json.decoder.JSONDecodeError:
+                # If loading the JSON file fails, return None
+                return None
 
             # Check that the station ID is correct
             if str(dt_json['stationID']) == str(config.stationID):
@@ -930,7 +935,7 @@ def loadForcedBinFluxData(dir_path, file_name):
     if len(dt_bins):
         dt_bins = np.append(dt_bins, [flux_table.table.meta['time_range'][1]])
 
-    meteor_list = flux_table.table['meteors'].data.astype(np.int).tolist()
+    meteor_list = flux_table.table['meteors'].data.astype(int).tolist()
     area_list = (1e6*flux_table.table['eff_col_area'].data).tolist()
     time_list = flux_table.table['time_bin'].data
     meteor_lm_list = flux_table.table['meteor_lm'].data.tolist()
@@ -1174,7 +1179,7 @@ def detectClouds(config, dir_path, N=5, mask=None, show_plots=True, save_plots=F
         if ('CALSTARS' in calstars_file) and calstars_file.endswith('.txt'):
             break
     star_list = readCALSTARS(dir_path, calstars_file)
-    print('CALSTARS file: ' + calstars_file + ' loaded!')
+    print('CALSTARS file: {:s} loaded!'.format(calstars_file))
 
 
     # Get FF file every N minutes
@@ -1317,7 +1322,7 @@ def detectClouds(config, dir_path, N=5, mask=None, show_plots=True, save_plots=F
 
     # Compute the predicted number of stars on every recalibrated FF file
     predicted_stars = predictStarNumberInFOV(
-        recalibrated_platepars, ff_limiting_magnitude, config, mask, show_plot=show_plots
+        recalibrated_platepars, ff_limiting_magnitude, config, mask=mask, show_plot=show_plots
     )
     # for ff in predicted_stars:
     #     print(ff, matched_count.get(ff), predicted_stars.get(ff), ff_limiting_magnitude.get(ff))
@@ -1612,8 +1617,8 @@ def collectingArea(platepar, mask=None, side_points=20, ht_min=60, ht_max=130, d
         col_areas_xy = collections.OrderedDict()
 
         # Sample the image
-        for x0 in np.linspace(0, platepar.X_res, longer_side_points, dtype=np.int, endpoint=False):
-            for y0 in np.linspace(0, platepar.Y_res, shorter_side_points, dtype=np.int, endpoint=False):
+        for x0 in np.linspace(0, platepar.X_res, longer_side_points, dtype=int, endpoint=False):
+            for y0 in np.linspace(0, platepar.Y_res, shorter_side_points, dtype=int, endpoint=False):
 
                 # Compute lower right corners of the segment
                 xe = x0 + longer_dpx
@@ -1955,6 +1960,7 @@ def computeFluxCorrectionsOnBins(
         fixed_bins: [bool] Compute fixed bins.
 
     """
+
     # Track values used for flux
     sol_data = []
     flux_lm_6_5_data = []
@@ -2601,7 +2607,7 @@ def createMetadataDir(dir_path, metadata_dir):
 def computeFlux(config, dir_path, ftpdetectinfo_path, shower_code, dt_beg, dt_end, mass_index, \
     binduration=None, binmeteors=None, timebin_intdt=0.25, ref_height=None, ht_std_percent=5.0, mask=None, \
     show_plots=True, show_mags=False, save_plots=False, confidence_interval=0.95, default_fwhm=None, \
-    forced_bins=None, compute_single=True, metadata_dir=None):
+    forced_bins=None, compute_single=True, metadata_dir=None, verbose=False):
     """Compute flux using measurements in the given FTPdetectinfo file.
 
     Arguments:
@@ -2642,6 +2648,7 @@ def computeFlux(config, dir_path, ftpdetectinfo_path, shower_code, dt_beg, dt_en
             not be computed. True by default.
         metadata_dir: [str] A separate directory for flux metadata. If not given, the data directory will be
             used.
+        verbose: [bool] Print additional debug information. False by default.
 
     Return:
         [tuple] sol_data, flux_lm_6_5_data, flux_lm_6_5_ci_lower_data, flux_lm_6_5_ci_upper_data, bin_information
@@ -3223,6 +3230,7 @@ def computeFlux(config, dir_path, ftpdetectinfo_path, shower_code, dt_beg, dt_en
                 sensor_data,
                 confidence_interval=confidence_interval,
                 binduration=binduration,
+                verbose=verbose
             )
 
 
@@ -3290,7 +3298,7 @@ def computeFlux(config, dir_path, ftpdetectinfo_path, shower_code, dt_beg, dt_en
                 sensor_data,
                 confidence_interval=confidence_interval,
                 fixed_bins=True,
-                verbose=False
+                verbose=verbose
             )
             
             print('Finished computing collecting areas for fixed bins')
@@ -3786,6 +3794,9 @@ def fluxParser():
     flux_parser.add_argument('-m', '--showmag', action="store_true", \
         help="""Show the magnitude plot.""")
 
+    flux_parser.add_argument('--verbose', action="store_true", \
+        help="""Print debug information. """)
+
     return flux_parser
 
 
@@ -3876,5 +3887,6 @@ if __name__ == "__main__":
             ref_height=cml_args.ht,
             save_plots=True,
             show_mags=cml_args.showmag,
-            default_fwhm=cml_args.fwhm
+            default_fwhm=cml_args.fwhm,
+            verbose=cml_args.verbose
         )

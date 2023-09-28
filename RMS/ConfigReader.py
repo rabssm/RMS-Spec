@@ -226,6 +226,7 @@ class Config:
 
         # default config file absolute path
         self.config_file_name = os.path.join(self.rms_root_dir, '.config')
+        self.config_file_path = os.path.dirname(self.config_file_name)
 
         ##### System
         self.stationID = "XX0001"
@@ -233,6 +234,20 @@ class Config:
         self.longitude = 0
         self.elevation = 0
         self.cams_code = 0
+
+
+
+        # Show this camera on the GMN weblog
+        self.weblog_enable = True
+
+        # The description that will be shown on the weblog (e.g. location, pointing direction)
+        self.weblog_description = ""
+
+        # Camera network (e.g. national networks, used for grouping on the weblog)
+        self.network_name = None
+        # Camera group (e.g. a camera cluster or a location with multiple cameras)
+        self.camera_group_name = None
+
 
         self.external_script_run = False
         self.auto_reprocess_external_script_run = False
@@ -298,6 +313,7 @@ class Config:
 
         # Automatically reprocess broken capture directories
         self.auto_reprocess = True
+        self.prioritize_capture_over_reprocess = False
 
         # Flag file which indicates that the previously processed files are loaded during capture resume
         self.capture_resume_flag_file = ".capture_resuming"
@@ -342,6 +358,15 @@ class Config:
 
         # 1 - Normal, 2 - Skip uploading FFs, 3 - Skip FFs and FRs
         self.upload_mode = 1
+
+        self.event_monitor_enabled = True
+        self.event_monitor_db_name = "event_monitor.db"
+        self.event_monitor_webpage = "https://globalmeteornetwork.org/events/event_watchlist.txt"
+        self.event_monitor_remote_dir = "files/event_monitor"
+        self.event_monitor_check_interval = 30
+        self.event_monitor_check_interval_fast = 5
+
+
 
 
         ##### Weave compilation arguments
@@ -496,6 +521,10 @@ class Config:
         self.stack_mask = False
 
 
+        ##### Timelapse
+        self.timelapse_generate_captured = True
+
+
         #### Shower association
 
         # Path to the shower file
@@ -520,6 +549,10 @@ class Config:
 
         # Maximum distance from shower radiant (degrees)
         self.shower_max_radiant_separation = 7.5
+
+        #### Event Monitor
+
+        self.event_monitor_db_name = "event_monitor.db"
 
 
 def normalizeParameter(param, config, binning=1):
@@ -599,6 +632,7 @@ def parse(path, strict=True):
 
     # Store parsed config file name
     config.config_file_name = path
+    config.config_file_path = os.path.dirname(path)
 
     # Parse an RMS config file
     if os.path.basename(path).endswith('.config'):
@@ -610,7 +644,14 @@ def parse(path, strict=True):
 
     else:
         raise RuntimeError('Unknown config file name: {}'.format(os.path.basename(path)))
+
+
+    # Disable upload if the default station name is used
+    if config.stationID == "XX0001":
+        print("Disabled upload because the default station code is used!")
+        config.upload_enabled = False
     
+
     return config
 
 
@@ -627,6 +668,7 @@ def parseConfigFile(config, parser):
     parseCalibration(config, parser)
     parseThumbnails(config, parser)
     parseStack(config, parser)
+    parseTimelapse(config, parser)
     parseColors(config, parser)
 
 
@@ -687,6 +729,23 @@ def parseSystem(config, parser):
     if parser.has_option(section, "cams_code"):
         config.cams_code = parser.getint(section, "cams_code")
 
+
+    if parser.has_option(section, "weblog_enable"):
+        config.weblog_enable = parser.getboolean(section, "weblog_enable")
+
+    if parser.has_option(section, "weblog_description"):
+        config.weblog_description = parser.get(section, "weblog_description")
+
+    if parser.has_option(section, "network_name"):
+        config.network_name = parser.get(section, "network_name")
+        if config.network_name.lower() == "none":
+            config.network_name = None
+
+    if parser.has_option(section, "camera_group_name"):
+        config.camera_group_name = parser.get(section, "camera_group_name")
+        if config.camera_group_name.lower() == "none":
+            config.camera_group_name = None
+    
     if parser.has_option(section, "external_script_run"):
         config.external_script_run = parser.getboolean(section, "external_script_run")
 
@@ -695,6 +754,9 @@ def parseSystem(config, parser):
         config.auto_reprocess_external_script_run = parser.getboolean(section, \
             "auto_reprocess_external_script_run")
 
+    if parser.has_option(section, "prioritize_capture_over_reprocess"):
+        config.prioritize_capture_over_reprocess = parser.getboolean(section, \
+            "prioritize_capture_over_reprocess")
 
     if parser.has_option(section, "external_script_path"):
         config.external_script_path = parser.get(section, "external_script_path")
@@ -708,7 +770,10 @@ def parseSystem(config, parser):
 
     if parser.has_option(section, "reboot_lock_file"):
         config.reboot_lock_file = parser.get(section, "reboot_lock_file")
-        
+
+
+    if parser.has_option(section, "event_monitor_db_name"):
+        config.event_monitor_db_name = parser.get(section, "event_monitor_db_name")
 
 
 def parseCapture(config, parser):
@@ -861,7 +926,7 @@ def parseCapture(config, parser):
         config.deinterlace_order = parser.getint(section, "deinterlace_order")
 
     if parser.has_option(section, "mask"):
-        config.mask_file = parser.get(section, "mask")
+        config.mask_file = os.path.basename(parser.get(section, "mask"))
 
 
     if parser.has_option(section, "extra_space_gb"):
@@ -885,6 +950,10 @@ def parseCapture(config, parser):
     if parser.has_option(section, "auto_reprocess"):
         config.auto_reprocess = parser.getboolean(section, "auto_reprocess")
 
+    # Prioritize capture over reprocessing - do not start reprocessing a new directory if should be capturing
+    if parser.has_option(section, "prioritize_capture_over_reprocess"):
+        config.prioritize_capture_over_reprocess = parser.getboolean(section, \
+            "prioritize_capture_over_reprocess")
 
     # Load name of the capture resume flag file
     if parser.has_option(section, "capture_resume_flag_file"):
@@ -947,7 +1016,29 @@ def parseUpload(config, parser):
     # SSH port
     if parser.has_option(section, "upload_mode"):
         config.upload_mode = parser.getint(section, "upload_mode")
-        
+
+    # Event monitor enabled
+    if parser.has_option(section, "event_monitor_enabled"):
+        config.event_monitor_enabled = parser.getboolean(section, "event_monitor_enabled")
+
+
+    # Name to use for eventmonitor database
+    if parser.has_option(section, "event_monitor_db_name"):
+        config.event_monitor_webpage = parser.get(section, "event_monitor_db_name")
+
+    # Address to look for watchlist
+    if parser.has_option(section, "event_monitor_webpage"):
+        config.event_monitor_webpage = parser.get(section, "event_monitor_webpage")
+
+    # Directory on the server where the events will be uploaded to
+    if parser.has_option(section, "event_monitor_remote_dir"):
+        config.event_monitor_remote_dir = parser.get(section, "event_monitor_remote_dir")
+
+    if parser.has_option(section, "event_monitor_check_interval"):
+        config.event_monitor_check_interval = parser.getint(section, "event_monitor_check_interval")
+
+    if parser.has_option(section, "event_monitor_check_interval_fast"):
+        config.event_monitor_check_interval_fast = parser.getint(section, "event_monitor_check_interval_fast")
 
 
 def parseBuildArgs(config, parser):
@@ -1307,7 +1398,7 @@ def parseCalibration(config, parser):
 
 
     if parser.has_option(section, "platepar_name"):
-        config.platepar_name = parser.get(section, "platepar_name")
+        config.platepar_name = os.path.basename(parser.get(section, "platepar_name"))
 
     if parser.has_option(section, "platepars_flux_recalibrated_name"):
         config.platepar_flux_recalibrated_name = parser.get(section, "platepars_flux_recalibrated_name")
@@ -1370,6 +1461,16 @@ def parseStack(config, parser):
             config.stack_mask = parser.getboolean(section, "stack_mask")
     except ValueError:
         config.stack_mask = False
+
+
+def parseTimelapse(config, parser):
+    section = "Timelapse"
+
+    if not parser.has_section(section):
+        return
+    
+    if parser.has_option(section, "timelapse_generate_captured"):
+        config.timelapse_generate_captured = parser.getboolean(section, "timelapse_generate_captured")
 
 
 def parseColors(config, parser):

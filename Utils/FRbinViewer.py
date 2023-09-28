@@ -32,7 +32,7 @@ from RMS.Formats import FFfile, FRbin
 
 
 def view(dir_path, ff_path, fr_path, config, save_frames=False, extract_format=None, hide=False,
-        avg_background=False):
+        avg_background=False, split=False, add_timestamp=False):
     """ Shows the detected fireball stored in the FR file. 
     
     Arguments:
@@ -47,14 +47,13 @@ def view(dir_path, ff_path, fr_path, config, save_frames=False, extract_format=N
         hide: [bool] Don't show frames on the screen.
         avg_background: [bool] Avepixel as background. False by default, in which case the maxpixel will be
             used.
+        split: [bool] Split the video into multiple videos, one for each line. False by default.
+        add_timestamp: [bool] Add timestamp to the image. False by default.
 
     """
 
     if extract_format is None:
         extract_format = 'png'
-
-    else:
-        save_frames = True
     
     name = fr_path
     fr = FRbin.read(dir_path, fr_path)
@@ -94,49 +93,104 @@ def view(dir_path, ff_path, fr_path, config, save_frames=False, extract_format=N
         makevideo = True
         extract_format = 'png'
 
-    for current_line in range(fr.lines):
+    videos = []
+    
+    if split: # legacy mode, one video per line
+        for current_line in range(fr.lines):
+            frames = []
+            for z in range(fr.frameNum[current_line]):
+                frames.append([(current_line, z)])
+            videos.append(frames)
+    else: # regular mode, sort frames in time producing single video
+        clips = dict()
+        start = 10000
+        end = -1
+        
+        for current_line in range(fr.lines):
+            for z in range(fr.frameNum[current_line]):
+                t = fr.t[current_line][z]
+                if not t in clips:
+                    clips[t] = []
+                clips[t].append((current_line, z))
+                start = min(start, t)
+                end = max(end, t)
+
+        videos.append([])
+        
+        for t in range(start, end + 1):
+            if t in clips:
+                videos[0].append(clips[t])
+
+    video_num = 0
+
+    for video in videos:
 
         print('Frame,  Y ,  X , size')
-        framefiles=[] # array to hold names of frames for later deletion 
+        framefiles=[] # array to hold names of frames for later deletion
 
-        for z in range(fr.frameNum[current_line]):
+        frame_num = 0
 
-            # Get the center position of the detection on the current frame
-            yc = fr.yc[current_line][z]
-            xc = fr.xc[current_line][z]
+        # Track the first frame
+        first_frame = np.inf
 
-            # Get the frame number
-            t = fr.t[current_line][z]
-
-            # Get the size of the window
-            size = fr.size[current_line][z]
-            
-            print("  {:3d}, {:3d}, {:3d}, {:d}".format(t, yc, xc, size))
-
+        for frame in video:        
+        
             img = np.copy(background)
-            
-            # Paste the frames onto the big image
-            y_img = np.arange(yc - size//2, yc + size//2)
-            x_img = np.arange(xc - size//2, xc + size//2)
 
-            Y_img, X_img = np.meshgrid(y_img, x_img)
+            for current_line, z in frame:
+                
+                # Get the center position of the detection on the current frame
+                yc = fr.yc[current_line][z]
+                xc = fr.xc[current_line][z]
 
-            y_frame = np.arange(len(y_img))
-            x_frame = np.arange(len(x_img))
+                # Get the frame number
+                t = fr.t[current_line][z]
 
-            Y_frame, X_frame = np.meshgrid(y_frame, x_frame)                
+                # Get the size of the window
+                size = fr.size[current_line][z]
+                
+                print("  {:3d}, {:3d}, {:3d}, {:d}".format(t, yc, xc, size))
 
-            img[Y_img, X_img] = fr.frames[current_line][z][Y_frame, X_frame]
+                # Set the first frame
+                if t < first_frame:
+                    first_frame = t
+                
+                # Paste the frames onto the big image
+                y_img = np.arange(yc - size//2, yc + size//2)
+                x_img = np.arange(xc - size//2, xc + size//2)
+
+                Y_img, X_img = np.meshgrid(y_img, x_img)
+
+                y_frame = np.arange(len(y_img))
+                x_frame = np.arange(len(x_img))
+
+                Y_frame, X_frame = np.meshgrid(y_frame, x_frame)                
+
+                img[Y_img, X_img] = fr.frames[current_line][z][Y_frame, X_frame]
+
+            # Add timestamp
+            if add_timestamp:
+
+                # Put the name of the FR file, followed by the frame number
+                # Put a black shadow
+                cv2.putText(img, fr_path + " frame = {:3d}".format(t), (10, 20), 
+                            fontFace=cv2.FONT_HERSHEY_SIMPLEX , fontScale=0.5, color=[0, 0, 0], 
+                            lineType=cv2.LINE_AA, thickness=2)
+                cv2.putText(img, fr_path + " frame = {:3d}".format(t), (10, 20), 
+                            fontFace=cv2.FONT_HERSHEY_SIMPLEX , fontScale=0.5, color=[255, 255, 255], 
+                            lineType=cv2.LINE_AA, thickness=1)
 
 
             # Save frame to disk
-            if save_frames:
+            if save_frames or makevideo:
                 frame_file_name = fr_path.replace('.bin', '') \
-                    + "_line_{:02d}_frame_{:03d}.{:s}".format(current_line, t, extract_format)
+                    + "_line_{:02d}_frame_{:03d}.{:s}".format(video_num, t, extract_format)
                 cv2.imwrite(os.path.join(dir_path, frame_file_name), img)
                 framefiles.append(frame_file_name)
                 img_patt = os.path.join(dir_path, fr_path.replace('.bin', '')
-                    + "_line_{:02d}_frame_%03d.{:s}".format(current_line, extract_format))
+                    + "_line_{:02d}_frame_%03d.{:s}".format(video_num, extract_format))
+
+            frame_num += 1
 
             if not hide:
             
@@ -181,30 +235,44 @@ def view(dir_path, ff_path, fr_path, config, save_frames=False, extract_format=N
                 elif key == ord("q"): 
                     os._exit(0)
 
+
         if makevideo is True:
+
             root = os.path.dirname(__file__)
             ffmpeg_path = os.path.join(root, "ffmpeg.exe")
-            first_frame = min(fr.t[current_line])
-            mp4_path = os.path.join(dir_path, fr_path.replace('.bin', '') + '_line_{:02d}.mp4'.format(current_line))
+            
+            mp4_path = os.path.join(dir_path, fr_path.replace('.bin', '') + '_line_{:02d}.mp4'.format(video_num))
 
             # If running on Windows, use ffmpeg.exe
             if platform.system() == 'Windows':
-                com = ffmpeg_path + " -y -f image2 -pattern_type sequence -start_number " + str(first_frame) + " -i " + img_patt +" " + mp4_path
-                subprocess.call(com, shell=True, cwd=dir_path)
+                com = ffmpeg_path + " -y -f image2 -pattern_type sequence -framerate " + str(config.fps) + " -start_number " + str(first_frame) + " -i " + img_patt +" " + mp4_path
+                
+
             else:
                 software_name = "avconv"
                 if os.system(software_name + " --help > /dev/null"):
                     software_name = "ffmpeg"
                     # Construct the ecommand for ffmpeg           
-                    com = software_name + " -y -f image2 -pattern_type sequence -start_number " + str(first_frame) + " -i " + img_patt +" " + mp4_path
+                    com = software_name + " -y -f image2 -pattern_type sequence -framerate " + str(config.fps) + " -start_number " + str(first_frame) + " -i " + img_patt +" " + mp4_path
                 else:
                     com = "cd " + dir_path + ";" \
                         + software_name + " -v quiet -r 30 -y -start_number " + str(first_frame) + " -i " + img_patt \
                         + " -vcodec libx264 -pix_fmt yuv420p -crf 25 -movflags faststart -g 15 -vf \"hqdn3d=4:3:6:4.5,lutyuv=y=gammaval(0.97)\" " \
                         + mp4_path
-                subprocess.call(com, shell=True, cwd=dir_path)
-            for frame in framefiles:
-                os.remove(os.path.join(dir_path, frame))
+            
+            # Print the command
+            print("Command:")
+            print(com)
+
+            # Run the command
+            subprocess.call(com, shell=True, cwd=dir_path)
+
+            # Delete frames unless the user specified to keep them
+            if not save_frames:
+                for frame in framefiles:
+                    os.remove(os.path.join(dir_path, frame))
+
+        video_num += 1
 
     if not hide:
         cv2.destroyWindow(name)
@@ -239,6 +307,10 @@ if __name__ == "__main__":
 
     arg_parser.add_argument('-c', '--config', nargs=1, metavar='CONFIG_PATH', type=str,
         help="Path to a config file which will be used instead of the default one.")
+
+    arg_parser.add_argument('-s', '--split', action="store_true", help="Use legacy mode where lines are displayed one-by-one.")
+
+    arg_parser.add_argument("-t", "--timestamp", action="store_true", help="Show timestamp on the image.")
 
     # Parse the command line arguments
     cml_args = arg_parser.parse_args()
@@ -294,7 +366,8 @@ if __name__ == "__main__":
         
         # View the fireball detection
         retval = view(dir_path, ff_match, fr, config, save_frames=cml_args.extract,
-            extract_format=cml_args.extractformat, hide=cml_args.hide, avg_background=cml_args.avg)
+            extract_format=cml_args.extractformat, hide=cml_args.hide, avg_background=cml_args.avg, 
+            split=cml_args.split, add_timestamp=cml_args.timestamp)
 
         # Return to previous file
         if retval == -1:
